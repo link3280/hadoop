@@ -34,8 +34,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.commons.lang.builder.EqualsBuilder;
-import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.CipherSuite;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
@@ -541,10 +541,6 @@ public class EncryptionZoneManager {
     if (srcIIP.getLastINode() == null) {
       throw new FileNotFoundException("cannot find " + srcIIP.getPath());
     }
-    if (dir.isNonEmptyDirectory(srcIIP)) {
-      throw new IOException(
-          "Attempt to create an encryption zone for a non-empty directory.");
-    }
 
     INode srcINode = srcIIP.getLastINode();
     if (!srcINode.isDirectory()) {
@@ -557,6 +553,10 @@ public class EncryptionZoneManager {
           "Directory " + srcIIP.getPath() + " is already an encryption zone.");
     }
 
+    if (dir.isNonEmptyDirectory(srcIIP)) {
+      throw new IOException(
+          "Attempt to create an encryption zone for a non-empty directory.");
+    }
     final HdfsProtos.ZoneEncryptionInfoProto proto =
         PBHelperClient.convert(suite, version, keyName);
     final XAttr ezXAttr = XAttrHelper

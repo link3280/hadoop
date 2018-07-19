@@ -33,9 +33,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.time.DateUtils;
-import org.apache.commons.lang.time.FastDateFormat;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.time.DateUtils;
+import org.apache.commons.lang3.time.FastDateFormat;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -1241,12 +1241,13 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
       return;
     }
 
-    RMAppAttempt attempt =
-        rmContext.getRMApps().get(attemptId.getApplicationId())
-          .getCurrentAppAttempt();
-    if (attempt != null) {
-      attempt.getRMAppAttemptMetrics().incNumAllocatedContainers(containerType,
-        requestType);
+    RMApp app = rmContext.getRMApps().get(attemptId.getApplicationId());
+    if (app != null) {
+      RMAppAttempt attempt = app.getCurrentAppAttempt();
+      if (attempt != null) {
+        attempt.getRMAppAttemptMetrics()
+            .incNumAllocatedContainers(containerType, requestType);
+      }
     }
   }
 

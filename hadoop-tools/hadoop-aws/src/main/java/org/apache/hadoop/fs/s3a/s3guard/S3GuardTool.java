@@ -39,7 +39,7 @@ import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileStatus;
@@ -439,6 +439,10 @@ public abstract class S3GuardTool extends Configured implements Tool {
   static class SetCapacity extends S3GuardTool {
     public static final String NAME = "set-capacity";
     public static final String PURPOSE = "Alter metadata store IO capacity";
+    public static final String READ_CAP_INVALID = "Read capacity must have "
+        + "value greater than or equal to 1.";
+    public static final String WRITE_CAP_INVALID = "Write capacity must have "
+        + "value greater than or equal to 1.";
     private static final String USAGE = NAME + " [OPTIONS] [s3a://BUCKET]\n" +
         "\t" + PURPOSE + "\n\n" +
         "Common options:\n" +
@@ -478,11 +482,17 @@ public abstract class S3GuardTool extends Configured implements Tool {
 
       String readCap = getCommandFormat().getOptValue(READ_FLAG);
       if (StringUtils.isNotEmpty(readCap)) {
+        Preconditions.checkArgument(Integer.parseInt(readCap) > 0,
+            READ_CAP_INVALID);
+
         S3GuardTool.println(out, "Read capacity set to %s", readCap);
         options.put(S3GUARD_DDB_TABLE_CAPACITY_READ_KEY, readCap);
       }
       String writeCap = getCommandFormat().getOptValue(WRITE_FLAG);
       if (StringUtils.isNotEmpty(writeCap)) {
+        Preconditions.checkArgument(Integer.parseInt(writeCap) > 0,
+            WRITE_CAP_INVALID);
+
         S3GuardTool.println(out, "Write capacity set to %s", writeCap);
         options.put(S3GUARD_DDB_TABLE_CAPACITY_WRITE_KEY, writeCap);
       }
@@ -805,7 +815,9 @@ public abstract class S3GuardTool extends Configured implements Tool {
      */
     private void compareDir(FileStatus msDir, FileStatus s3Dir,
                             PrintStream out) throws IOException {
-      Preconditions.checkArgument(!(msDir == null && s3Dir == null));
+      Preconditions.checkArgument(!(msDir == null && s3Dir == null),
+          "The path does not exist in metadata store and on s3.");
+
       if (msDir != null && s3Dir != null) {
         Preconditions.checkArgument(msDir.getPath().equals(s3Dir.getPath()),
             String.format("The path from metadata store and s3 are different:" +
@@ -966,8 +978,16 @@ public abstract class S3GuardTool extends Configured implements Tool {
       long now = System.currentTimeMillis();
       long divide = now - delta;
 
+      // remove the protocol from path string to get keyPrefix
+      // by default the keyPrefix is "/" - unless the s3 URL is provided
+      String keyPrefix = "/";
+      if(paths.size() > 0) {
+        Path path = new Path(paths.get(0));
+        keyPrefix = PathMetadataDynamoDBTranslation.pathToParentKey(path);
+      }
+
       try {
-        getStore().prune(divide);
+        getStore().prune(divide, keyPrefix);
       } catch (UnsupportedOperationException e){
         errorln("Prune operation not supported in metadata store.");
       }

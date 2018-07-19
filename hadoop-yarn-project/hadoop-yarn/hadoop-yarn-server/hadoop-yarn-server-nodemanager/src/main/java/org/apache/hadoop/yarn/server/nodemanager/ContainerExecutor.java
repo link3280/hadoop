@@ -24,6 +24,7 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -182,6 +183,17 @@ public abstract class ContainerExecutor implements Configurable {
       IOException, ConfigurationException;
 
   /**
+   * Relaunch the container on the node. This is a blocking call and returns
+   * only when the container exits.
+   * @param ctx Encapsulates information necessary for relaunching containers.
+   * @return the return status of the relaunch
+   * @throws IOException if the container relaunch fails
+   * @throws ConfigurationException if config error was found
+   */
+  public abstract int relaunchContainer(ContainerStartContext ctx) throws
+      IOException, ConfigurationException;
+
+  /**
    * Signal container with the specified signal.
    *
    * @param ctx Encapsulates information necessary for signaling containers.
@@ -298,7 +310,8 @@ public abstract class ContainerExecutor implements Configurable {
     }
 
     try {
-      return Integer.parseInt(FileUtils.readFileToString(file).trim());
+      return Integer.parseInt(
+          FileUtils.readFileToString(file, Charset.defaultCharset()).trim());
     } catch (NumberFormatException e) {
       throw new IOException("Error parsing exit code from pid " + pid, e);
     }

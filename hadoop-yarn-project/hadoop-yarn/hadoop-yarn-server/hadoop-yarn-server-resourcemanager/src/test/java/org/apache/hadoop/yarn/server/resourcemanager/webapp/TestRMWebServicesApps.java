@@ -79,7 +79,7 @@ import com.sun.jersey.test.framework.WebAppDescriptor;
 public class TestRMWebServicesApps extends JerseyTestBase {
 
   private static MockRM rm;
-  
+
   private static final int CONTAINER_MB = 1024;
 
   private static class WebServletModule extends ServletModule {
@@ -324,7 +324,7 @@ public class TestRMWebServicesApps extends JerseyTestBase {
     assertEquals("incorrect number of elements", 1, apps.length());
     array = apps.getJSONArray("app");
     assertEquals("incorrect number of elements", 2, array.length());
-    assertTrue("both app states of ACCEPTED and KILLED are not present", 
+    assertTrue("both app states of ACCEPTED and KILLED are not present",
         (array.getJSONObject(0).getString("state").equals("ACCEPTED") &&
         array.getJSONObject(1).getString("state").equals("KILLED")) ||
         (array.getJSONObject(0).getString("state").equals("KILLED") &&
@@ -375,12 +375,12 @@ public class TestRMWebServicesApps extends JerseyTestBase {
     assertEquals("incorrect number of elements", 1, apps.length());
     array = apps.getJSONArray("app");
     assertEquals("incorrect number of elements", 2, array.length());
-    assertTrue("both app states of ACCEPTED and KILLED are not present", 
+    assertTrue("both app states of ACCEPTED and KILLED are not present",
         (array.getJSONObject(0).getString("state").equals("ACCEPTED") &&
         array.getJSONObject(1).getString("state").equals("KILLED")) ||
         (array.getJSONObject(0).getString("state").equals("KILLED") &&
         array.getJSONObject(1).getString("state").equals("ACCEPTED")));
-    
+
     rm.stop();
   }
 
@@ -511,7 +511,8 @@ public class TestRMWebServicesApps extends JerseyTestBase {
     WebResource r = resource();
 
     ClientResponse response = r.path("ws").path("v1").path("cluster")
-        .path("apps").queryParam("finalStatus", FinalApplicationStatus.UNDEFINED.toString())
+        .path("apps").queryParam("finalStatus",
+                    FinalApplicationStatus.UNDEFINED.toString())
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
         response.getType().toString());
@@ -1553,6 +1554,7 @@ public class TestRMWebServicesApps extends JerseyTestBase {
           WebServicesTestUtils.getXmlString(element, "diagnostics"),
           WebServicesTestUtils.getXmlLong(element, "clusterId"),
           WebServicesTestUtils.getXmlLong(element, "startedTime"),
+          WebServicesTestUtils.getXmlLong(element, "launchTime"),
           WebServicesTestUtils.getXmlLong(element, "finishedTime"),
           WebServicesTestUtils.getXmlLong(element, "elapsedTime"),
           WebServicesTestUtils.getXmlString(element, "amHostHttpAddress"),
@@ -1603,7 +1605,7 @@ public class TestRMWebServicesApps extends JerseyTestBase {
   public void verifyAppInfo(JSONObject info, RMApp app, boolean hasResourceReqs)
       throws JSONException, Exception {
 
-    int expectedNumberOfElements = 39 + (hasResourceReqs ? 2 : 0);
+    int expectedNumberOfElements = 40 + (hasResourceReqs ? 2 : 0);
     String appNodeLabelExpression = null;
     String amNodeLabelExpression = null;
     if (app.getApplicationSubmissionContext()
@@ -1629,8 +1631,10 @@ public class TestRMWebServicesApps extends JerseyTestBase {
         info.getString("state"), info.getString("finalStatus"),
         (float) info.getDouble("progress"), info.getString("trackingUI"),
         info.getString("diagnostics"), info.getLong("clusterId"),
-        info.getLong("startedTime"), info.getLong("finishedTime"),
-        info.getLong("elapsedTime"), info.getString("amHostHttpAddress"),
+        info.getLong("startedTime"), info.getLong("launchTime"),
+        info.getLong("finishedTime"),
+        info.getLong("elapsedTime"),
+        info.getString("amHostHttpAddress"),
         info.getString("amContainerLogs"), info.getInt("allocatedMB"),
         info.getInt("allocatedVCores"), info.getInt("runningContainers"),
         (float) info.getDouble("queueUsagePercentage"),
@@ -1653,8 +1657,9 @@ public class TestRMWebServicesApps extends JerseyTestBase {
   public void verifyAppInfoGeneric(RMApp app, String id, String user,
       String name, String applicationType, String queue, int prioirty,
       String state, String finalStatus, float progress, String trackingUI,
-      String diagnostics, long clusterId, long startedTime, long finishedTime,
-      long elapsedTime, String amHostHttpAddress, String amContainerLogs,
+      String diagnostics, long clusterId, long startedTime,
+      long launchTime, long finishedTime, long elapsedTime,
+      String amHostHttpAddress, String amContainerLogs,
       int allocatedMB, int allocatedVCores, int numContainers,
       float queueUsagePerc, float clusterUsagePerc,
       int preemptedResourceMB, int preemptedResourceVCores,
@@ -1800,7 +1805,8 @@ public class TestRMWebServicesApps extends JerseyTestBase {
     int numAttempt = 1;
     while (true) {
       // fail the AM by sending CONTAINER_FINISHED event without registering.
-      amNodeManager.nodeHeartbeat(am.getApplicationAttemptId(), 1, ContainerState.COMPLETE);
+      amNodeManager.nodeHeartbeat(am.getApplicationAttemptId(), 1,
+              ContainerState.COMPLETE);
       rm.waitForState(am.getApplicationAttemptId(), RMAppAttemptState.FAILED);
       if (numAttempt == maxAppAttempts) {
         rm.waitForState(app1.getApplicationId(), RMAppState.FAILED);

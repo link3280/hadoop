@@ -35,7 +35,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.lang.math.RandomUtils;
+import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileUtil;
@@ -337,6 +337,12 @@ public class DefaultContainerExecutor extends ContainerExecutor {
       if (shExec != null) shExec.close();
     }
     return 0;
+  }
+
+  @Override
+  public int relaunchContainer(ContainerStartContext ctx)
+      throws IOException, ConfigurationException {
+    return launchContainer(ctx);
   }
 
   /**

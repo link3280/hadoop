@@ -37,6 +37,8 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
+
 /**
  * A FailoverProxyProvider implementation which allows one to configure
  * multiple URIs to connect to during fail-over. A random configured address is
@@ -52,14 +54,19 @@ public class ConfiguredFailoverProxyProvider<T> extends
   protected final Configuration conf;
   protected final List<AddressRpcProxyPair<T>> proxies =
       new ArrayList<AddressRpcProxyPair<T>>();
-  private final UserGroupInformation ugi;
+  protected final UserGroupInformation ugi;
   protected final Class<T> xface;
 
   private int currentProxyIndex = 0;
-  private final HAProxyFactory<T> factory;
+  protected final HAProxyFactory<T> factory;
 
   public ConfiguredFailoverProxyProvider(Configuration conf, URI uri,
       Class<T> xface, HAProxyFactory<T> factory) {
+    this(conf, uri, xface, factory, DFS_NAMENODE_RPC_ADDRESS_KEY);
+  }
+
+  public ConfiguredFailoverProxyProvider(Configuration conf, URI uri,
+      Class<T> xface, HAProxyFactory<T> factory, String addressKey) {
     this.xface = xface;
     this.conf = new Configuration(conf);
     int maxRetries = this.conf.getInt(
@@ -81,7 +88,7 @@ public class ConfiguredFailoverProxyProvider<T> extends
       ugi = UserGroupInformation.getCurrentUser();
 
       Map<String, Map<String, InetSocketAddress>> map =
-          DFSUtilClient.getHaNnRpcAddresses(conf);
+          DFSUtilClient.getAddresses(conf, null, addressKey);
       Map<String, InetSocketAddress> addressesInNN = map.get(uri.getHost());
 
       if (addressesInNN == null || addressesInNN.size() == 0) {
@@ -94,9 +101,7 @@ public class ConfiguredFailoverProxyProvider<T> extends
         proxies.add(new AddressRpcProxyPair<T>(address));
       }
       // Randomize the list to prevent all clients pointing to the same one
-      boolean randomized = conf.getBoolean(
-          HdfsClientConfigKeys.Failover.RANDOM_ORDER,
-          HdfsClientConfigKeys.Failover.RANDOM_ORDER_DEFAULT);
+      boolean randomized = getRandomOrder(conf, uri);
       if (randomized) {
         Collections.shuffle(proxies);
       }
@@ -111,6 +116,31 @@ public class ConfiguredFailoverProxyProvider<T> extends
     }
   }
 
+  /**
+   * Check whether random order is configured for failover proxy provider
+   * for the namenode/nameservice.
+   *
+   * @param conf Configuration
+   * @param nameNodeUri The URI of namenode/nameservice
+   * @return random order configuration
+   */
+  private static boolean getRandomOrder(
+      Configuration conf, URI nameNodeUri) {
+    String host = nameNodeUri.getHost();
+    String configKeyWithHost = HdfsClientConfigKeys.Failover.RANDOM_ORDER
+        + "." + host;
+
+    if (conf.get(configKeyWithHost) != null) {
+      return conf.getBoolean(
+          configKeyWithHost,
+          HdfsClientConfigKeys.Failover.RANDOM_ORDER_DEFAULT);
+    }
+
+    return conf.getBoolean(
+        HdfsClientConfigKeys.Failover.RANDOM_ORDER,
+        HdfsClientConfigKeys.Failover.RANDOM_ORDER_DEFAULT);
+  }
+
   @Override
   public Class<T> getInterface() {
     return xface;
@@ -122,6 +152,10 @@ public class ConfiguredFailoverProxyProvider<T> extends
   @Override
   public synchronized ProxyInfo<T> getProxy() {
     AddressRpcProxyPair<T> current = proxies.get(currentProxyIndex);
+    return getProxy(current);
+  }
+
+  protected ProxyInfo<T> getProxy(AddressRpcProxyPair<T> current) {
     if (current.namenode == null) {
       try {
         current.namenode = factory.createProxy(conf,
@@ -147,7 +181,7 @@ public class ConfiguredFailoverProxyProvider<T> extends
    * A little pair object to store the address and connected RPC proxy object to
    * an NN. Note that {@link AddressRpcProxyPair#namenode} may be null.
    */
-  private static class AddressRpcProxyPair<T> {
+  protected static class AddressRpcProxyPair<T> {
     public final InetSocketAddress address;
     public T namenode;
 

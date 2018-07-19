@@ -120,6 +120,8 @@ public interface HdfsClientConfigKeys {
   String  DFS_CHECKSUM_TYPE_DEFAULT = "CRC32C";
   String  DFS_BYTES_PER_CHECKSUM_KEY = "dfs.bytes-per-checksum";
   int     DFS_BYTES_PER_CHECKSUM_DEFAULT = 512;
+  String  DFS_CHECKSUM_COMBINE_MODE_KEY = "dfs.checksum.combine.mode";
+  String  DFS_CHECKSUM_COMBINE_MODE_DEFAULT = "MD5MD5CRC";
   String  DFS_DATANODE_SOCKET_WRITE_TIMEOUT_KEY =
       "dfs.datanode.socket.write.timeout";
   String  DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC =
@@ -181,6 +183,9 @@ public interface HdfsClientConfigKeys {
   String DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES =
       "dfs.namenode.snapshot.capture.openfiles";
   boolean DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES_DEFAULT = false;
+
+  String DFS_PROVIDED_ALIASMAP_INMEMORY_RPC_ADDRESS =
+      "dfs.provided.aliasmap.inmemory.dnrpc-address";
 
   /**
    * These are deprecated config keys to client code.

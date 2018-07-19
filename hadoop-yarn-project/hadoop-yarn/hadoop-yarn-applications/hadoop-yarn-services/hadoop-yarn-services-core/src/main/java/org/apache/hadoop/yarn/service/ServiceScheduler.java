@@ -62,6 +62,7 @@ import org.apache.hadoop.yarn.service.api.ServiceApiConstants;
 import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.api.records.ServiceState;
 import org.apache.hadoop.yarn.service.api.records.ConfigFile;
+import org.apache.hadoop.yarn.service.component.ComponentRestartPolicy;
 import org.apache.hadoop.yarn.service.component.instance.ComponentInstance;
 import org.apache.hadoop.yarn.service.component.instance.ComponentInstanceEvent;
 import org.apache.hadoop.yarn.service.component.instance.ComponentInstanceEventType;
@@ -77,6 +78,7 @@ import org.apache.hadoop.yarn.service.timelineservice.ServiceMetricsSink;
 import org.apache.hadoop.yarn.service.timelineservice.ServiceTimelinePublisher;
 import org.apache.hadoop.yarn.service.utils.ServiceApiUtil;
 import org.apache.hadoop.yarn.service.utils.ServiceRegistryUtils;
+import org.apache.hadoop.yarn.service.utils.ServiceUtils;
 import org.apache.hadoop.yarn.util.BoundedAppender;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.slf4j.Logger;
@@ -89,8 +91,10 @@ import java.nio.ByteBuffer;
 import java.text.MessageFormat;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -101,6 +105,10 @@ import static org.apache.hadoop.registry.client.api.RegistryConstants.*;
 import static org.apache.hadoop.yarn.api.records.ContainerExitStatus.KILLED_AFTER_APP_COMPLETION;
 import static org.apache.hadoop.yarn.service.api.ServiceApiConstants.*;
 import static org.apache.hadoop.yarn.service.component.ComponentEventType.*;
+import static org.apache.hadoop.yarn.service.exceptions.LauncherExitCodes
+    .EXIT_FALSE;
+import static org.apache.hadoop.yarn.service.exceptions.LauncherExitCodes
+    .EXIT_SUCCESS;
 
 /**
  *
@@ -156,8 +164,17 @@ public class ServiceScheduler extends CompositeService {
   // requests for a single service is not recommended.
   private boolean hasAtLeastOnePlacementConstraint;
 
+  private boolean gracefulStop = false;
+
+  private volatile FinalApplicationStatus finalApplicationStatus =
+      FinalApplicationStatus.ENDED;
+
+  // For unit test override since we don't want to terminate UT process.
+  private ServiceUtils.ProcessTerminationHandler
+      terminationHandler = new ServiceUtils.ProcessTerminationHandler();
+
   public ServiceScheduler(ServiceContext context) {
-    super(context.service.getName());
+    super(context.getService().getName());
     this.context = context;
   }
 
@@ -199,6 +216,7 @@ public class ServiceScheduler extends CompositeService {
     addIfService(amRMClient);
 
     nmClient = createNMClient();
+    nmClient.getClient().cleanupRunningContainersOnStop(false);
     addIfService(nmClient);
 
     dispatcher = new AsyncDispatcher("Component  dispatcher");
@@ -231,9 +249,10 @@ public class ServiceScheduler extends CompositeService {
     createConfigFileCache(context.fs.getFileSystem());
 
     createAllComponents();
-    containerRecoveryTimeout = getConfig().getInt(
+    containerRecoveryTimeout = YarnServiceConf.getInt(
         YarnServiceConf.CONTAINER_RECOVERY_TIMEOUT_MS,
-        YarnServiceConf.DEFAULT_CONTAINER_RECOVERY_TIMEOUT_MS);
+        YarnServiceConf.DEFAULT_CONTAINER_RECOVERY_TIMEOUT_MS,
+        app.getConfiguration(), getConfig());
   }
 
   protected YarnRegistryViewForProviders createYarnRegistryOperations(
@@ -252,6 +271,12 @@ public class ServiceScheduler extends CompositeService {
         .createAMRMClientAsync(1000, new AMRMClientCallback());
   }
 
+  public void setGracefulStop(FinalApplicationStatus applicationStatus) {
+    this.gracefulStop = true;
+    this.finalApplicationStatus = applicationStatus;
+    nmClient.getClient().cleanupRunningContainersOnStop(true);
+  }
+
   @Override
   public void serviceInit(Configuration conf) throws Exception {
     try {
@@ -266,26 +291,31 @@ public class ServiceScheduler extends CompositeService {
   public void serviceStop() throws Exception {
     LOG.info("Stopping service scheduler");
 
-    // Mark component-instances/containers as STOPPED
-    if (YarnConfiguration.timelineServiceV2Enabled(getConfig())) {
-      for (ContainerId containerId : getLiveInstances().keySet()) {
-        serviceTimelinePublisher.componentInstanceFinished(containerId,
-            KILLED_AFTER_APP_COMPLETION, diagnostics.toString());
-      }
-    }
     if (executorService != null) {
       executorService.shutdownNow();
     }
 
     DefaultMetricsSystem.shutdown();
-    if (YarnConfiguration.timelineServiceV2Enabled(getConfig())) {
-      serviceTimelinePublisher
-          .serviceAttemptUnregistered(context, diagnostics.toString());
+
+    // only stop the entire service when a graceful stop has been initiated
+    // (e.g. via client RPC, not through the AM receiving a SIGTERM)
+    if (gracefulStop) {
+      if (YarnConfiguration.timelineServiceV2Enabled(getConfig())) {
+        // mark component-instances/containers as STOPPED
+        for (ContainerId containerId : getLiveInstances().keySet()) {
+          serviceTimelinePublisher.componentInstanceFinished(containerId,
+              KILLED_AFTER_APP_COMPLETION, diagnostics.toString());
+        }
+        // mark attempt as unregistered
+        serviceTimelinePublisher
+            .serviceAttemptUnregistered(context, diagnostics.toString());
+      }
+      // unregister AM
+      amRMClient.unregisterApplicationMaster(FinalApplicationStatus.ENDED,
+          diagnostics.toString(), "");
+      LOG.info("Service {} unregistered with RM, with attemptId = {} " +
+          ", diagnostics = {} ", app.getName(), context.attemptId, diagnostics);
     }
-    amRMClient.unregisterApplicationMaster(FinalApplicationStatus.ENDED,
-        diagnostics.toString(), "");
-    LOG.info("Service {} unregistered with RM, with attemptId = {} " +
-        ", diagnostics = {} ", app.getName(), context.attemptId, diagnostics);
     super.serviceStop();
   }
 
@@ -315,6 +345,7 @@ public class ServiceScheduler extends CompositeService {
     // Since AM has been started and registered, the service is in STARTED state
     app.setState(ServiceState.STARTED);
     serviceManager = new ServiceManager(context);
+    context.setServiceManager(serviceManager);
 
     // recover components based on containers sent from RM
     recoverComponents(response);
@@ -743,6 +774,32 @@ public class ServiceScheduler extends CompositeService {
       // automatically which will trigger stopping COMPONENT INSTANCE
     }
 
+    @Override
+    public void onContainerReInitialize(ContainerId containerId) {
+      ComponentInstance instance = liveInstances.get(containerId);
+      if (instance == null) {
+        LOG.error("No component instance exists for {}", containerId);
+        return;
+      }
+      ComponentInstanceEvent becomeReadyEvent = new ComponentInstanceEvent(
+          containerId, ComponentInstanceEventType.BECOME_READY);
+      dispatcher.getEventHandler().handle(becomeReadyEvent);
+    }
+
+    @Override
+    public void onContainerReInitializeError(ContainerId containerId,
+        Throwable t) {
+      ComponentInstance instance = liveInstances.get(containerId);
+      if (instance == null) {
+        LOG.error("No component instance exists for {}", containerId);
+        return;
+      }
+      ComponentEvent event = new ComponentEvent(instance.getCompName(),
+          ComponentEventType.CONTAINER_COMPLETED)
+          .setInstance(instance).setContainerId(containerId);
+      dispatcher.getEventHandler().handle(event);
+    }
+
     @Override public void onContainerResourceIncreased(ContainerId containerId,
         Resource resource) {
 
@@ -835,5 +892,58 @@ public class ServiceScheduler extends CompositeService {
 
   public boolean hasAtLeastOnePlacementConstraint() {
     return hasAtLeastOnePlacementConstraint;
+  }
+
+  /*
+* Check if all components of the scheduler finished.
+* If all components finished
+*   (which #failed-instances + #suceeded-instances = #total-n-containers)
+* The service will be terminated.
+*/
+  public synchronized void terminateServiceIfAllComponentsFinished() {
+    boolean shouldTerminate = true;
+
+    // Succeeded comps and failed comps, for logging purposes.
+    Set<String> succeededComponents = new HashSet<>();
+    Set<String> failedComponents = new HashSet<>();
+
+    for (Component comp : getAllComponents().values()) {
+      ComponentRestartPolicy restartPolicy = comp.getRestartPolicyHandler();
+      if (!restartPolicy.shouldTerminate(comp)) {
+        shouldTerminate = false;
+        break;
+      }
+
+      long nFailed = comp.getNumFailedInstances();
+
+      if (nFailed > 0) {
+        failedComponents.add(comp.getName());
+      } else{
+        succeededComponents.add(comp.getName());
+      }
+    }
+
+    if (shouldTerminate) {
+      LOG.info("All component finished, exiting Service Master... "
+          + ", final status=" + (failedComponents.isEmpty() ?
+          "Succeeded" :
+          "Failed"));
+      LOG.info("Succeeded components: [" + org.apache.commons.lang3.StringUtils
+          .join(succeededComponents, ",") + "]");
+      LOG.info("Failed components: [" + org.apache.commons.lang3.StringUtils
+          .join(failedComponents, ",") + "]");
+
+      if (failedComponents.isEmpty()) {
+        setGracefulStop(FinalApplicationStatus.SUCCEEDED);
+        getTerminationHandler().terminate(EXIT_SUCCESS);
+      } else{
+        setGracefulStop(FinalApplicationStatus.FAILED);
+        getTerminationHandler().terminate(EXIT_FALSE);
+      }
+    }
+  }
+
+  public ServiceUtils.ProcessTerminationHandler getTerminationHandler() {
+    return terminationHandler;
   }
 }

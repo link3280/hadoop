@@ -26,7 +26,7 @@ import java.util.Map.Entry;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
@@ -134,7 +134,7 @@ public abstract class MountTable extends BaseRecord {
     for (Entry<String, String> entry : destinations.entrySet()) {
       String nsId = entry.getKey();
       String path = normalizeFileSystemPath(entry.getValue());
-      RemoteLocation location = new RemoteLocation(nsId, path);
+      RemoteLocation location = new RemoteLocation(nsId, path, src);
       locations.add(location);
     }
 

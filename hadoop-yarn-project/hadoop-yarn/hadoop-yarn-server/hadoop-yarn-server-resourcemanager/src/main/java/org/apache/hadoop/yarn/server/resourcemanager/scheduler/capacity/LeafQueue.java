@@ -23,7 +23,7 @@ import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -778,6 +778,17 @@ public class LeafQueue extends AbstractCSQueue {
 
       metrics.setAMResouceLimit(nodePartition, amResouceLimit);
       queueUsage.setAMLimit(nodePartition, amResouceLimit);
+      if(LOG.isDebugEnabled()) {
+        LOG.debug("Queue: " + getQueueName() + ", node label : " +
+            nodePartition
+            + ", queue "
+            + "partition "
+            + "resource : " + queuePartitionResource + ','
+            + " queue current limit : " + queueCurrentLimit + ","
+            + " queue partition usable resource : "
+            + queuePartitionUsableResource + ","
+            + " amResourceLimit : " + amResouceLimit);
+      }
       return amResouceLimit;
     } finally {
       writeLock.unlock();

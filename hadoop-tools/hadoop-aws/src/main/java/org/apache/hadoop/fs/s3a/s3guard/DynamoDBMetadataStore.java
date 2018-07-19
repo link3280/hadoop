@@ -60,7 +60,7 @@ import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -261,6 +261,7 @@ public class DynamoDBMetadataStore implements MetadataStore {
   @Override
   @Retries.OnceRaw
   public void initialize(FileSystem fs) throws IOException {
+    Preconditions.checkNotNull(fs, "Null filesystem");
     Preconditions.checkArgument(fs instanceof S3AFileSystem,
         "DynamoDBMetadataStore only supports S3A filesystem.");
     owner = (S3AFileSystem) fs;
@@ -654,7 +655,8 @@ public class DynamoDBMetadataStore implements MetadataStore {
           retryCount, 0, true);
       if (action.action == RetryPolicy.RetryAction.RetryDecision.FAIL) {
         throw new IOException(
-            String.format("Max retries exceeded (%d) for DynamoDB",
+            String.format("Max retries exceeded (%d) for DynamoDB. This may be"
+                    + " because write threshold of DynamoDB is set too low.",
                 retryCount));
       } else {
         LOG.debug("Sleeping {} msec before next retry", action.delayMillis);
@@ -812,23 +814,33 @@ public class DynamoDBMetadataStore implements MetadataStore {
   }
 
   @Retries.OnceRaw
-  private ItemCollection<ScanOutcome> expiredFiles(long modTime) {
-    String filterExpression = "mod_time < :mod_time";
+  private ItemCollection<ScanOutcome> expiredFiles(long modTime,
+      String keyPrefix) {
+    String filterExpression =
+        "mod_time < :mod_time and begins_with(parent, :parent)";
     String projectionExpression = "parent,child";
-    ValueMap map = new ValueMap().withLong(":mod_time", modTime);
+    ValueMap map = new ValueMap()
+        .withLong(":mod_time", modTime)
+        .withString(":parent", keyPrefix);
     return table.scan(filterExpression, projectionExpression, null, map);
   }
 
   @Override
   @Retries.OnceRaw("once(batchWrite)")
   public void prune(long modTime) throws IOException {
+    prune(modTime, "/");
+  }
+
+  @Override
+  @Retries.OnceRaw("once(batchWrite)")
+  public void prune(long modTime, String keyPrefix) throws IOException {
     int itemCount = 0;
     try {
       Collection<Path> deletionBatch =
           new ArrayList<>(S3GUARD_DDB_BATCH_WRITE_REQUEST_LIMIT);
       int delay = conf.getInt(S3GUARD_DDB_BACKGROUND_SLEEP_MSEC_KEY,
           S3GUARD_DDB_BACKGROUND_SLEEP_MSEC_DEFAULT);
-      for (Item item : expiredFiles(modTime)) {
+      for (Item item : expiredFiles(modTime, keyPrefix)) {
         PathMetadata md = PathMetadataDynamoDBTranslation
             .itemToPathMetadata(item, username);
         Path path = md.getFileStatus().getPath();
@@ -1144,6 +1156,8 @@ public class DynamoDBMetadataStore implements MetadataStore {
       map.put(READ_CAPACITY, throughput.getReadCapacityUnits().toString());
       map.put(WRITE_CAPACITY, throughput.getWriteCapacityUnits().toString());
       map.put(TABLE, desc.toString());
+      map.put(MetadataStoreCapabilities.PERSISTS_AUTHORITATIVE_BIT,
+          Boolean.toString(false));
     } else {
       map.put("name", "DynamoDB Metadata Store");
       map.put(TABLE, "none");

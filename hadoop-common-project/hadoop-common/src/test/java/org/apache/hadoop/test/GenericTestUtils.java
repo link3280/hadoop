@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.fs.FileUtil;
@@ -344,7 +344,7 @@ public abstract class GenericTestUtils {
       throw new AssertionError(E_NULL_THROWABLE_STRING, t);
     }
     if (expectedText != null && !msg.contains(expectedText)) {
-      String prefix = org.apache.commons.lang.StringUtils.isEmpty(message)
+      String prefix = org.apache.commons.lang3.StringUtils.isEmpty(message)
           ? "" : (message + ": ");
       throw new AssertionError(
           String.format("%s Expected to find '%s' %s: %s",
@@ -661,7 +661,7 @@ public abstract class GenericTestUtils {
     public Object answer(InvocationOnMock invocation) throws Throwable {
       boolean interrupted = false;
       try {
-        Thread.sleep(r.nextInt(maxSleepTime) + minSleepTime);
+        Thread.sleep(r.nextInt(maxSleepTime - minSleepTime) + minSleepTime);
       } catch (InterruptedException ie) {
         interrupted = true;
       }

@@ -76,6 +76,7 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
 import java.net.UnknownHostException;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.ServerSocketChannel;
@@ -802,6 +803,8 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
           ch.socket().getPort(),
           ch.socket().getLocalAddress().getHostName(),
           ch.socket().getLocalPort(), e);
+    } catch (BufferUnderflowException e) {
+      // Ignore system monitor ping packets
     } finally {
       IOUtils.closeStream(ch);
     }
@@ -1103,7 +1106,7 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
     LOG.debug("calling addAnswer");
     byte rcode = addAnswer(response, name, type, dclass, 0, flags);
     if (rcode != Rcode.NOERROR) {
-      rcode = remoteLookup(response, name, 0);
+      rcode = remoteLookup(response, name, type, 0);
       response.getHeader().setRcode(rcode);
     }
     addAdditional(response, flags);
@@ -1121,20 +1124,40 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
   /**
    * Lookup record from upstream DNS servers.
    */
-  private byte remoteLookup(Message response, Name name, int iterations) {
+  private byte remoteLookup(Message response, Name name, int type,
+      int iterations) {
+    // If retrieving the root zone, query for NS record type
+    if (name.toString().equals(".")) {
+      type = Type.NS;
+    }
+
+    // Always add any CNAMEs to the response first
+    if (type != Type.CNAME) {
+      Record[] cnameAnswers = getRecords(name, Type.CNAME);
+      if (cnameAnswers != null) {
+        for (Record cnameR : cnameAnswers) {
+          if (!response.findRecord(cnameR)) {
+            response.addRecord(cnameR, Section.ANSWER);
+          }
+        }
+      }
+    }
+
     // Forward lookup to primary DNS servers
-    Record[] answers = getRecords(name, Type.ANY);
+    Record[] answers = getRecords(name, type);
     try {
       for (Record r : answers) {
-        if (r.getType() == Type.SOA) {
-          response.addRecord(r, Section.AUTHORITY);
-        } else {
-          response.addRecord(r, Section.ANSWER);
+        if (!response.findRecord(r)) {
+          if (r.getType() == Type.SOA) {
+            response.addRecord(r, Section.AUTHORITY);
+          } else {
+            response.addRecord(r, Section.ANSWER);
+          }
         }
         if (r.getType() == Type.CNAME) {
           Name cname = ((CNAMERecord) r).getAlias();
           if (iterations < 6) {
-            remoteLookup(response, cname, iterations + 1);
+            remoteLookup(response, cname, type, iterations + 1);
           }
         }
       }

@@ -32,7 +32,9 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.client.ConnectionConfigurator;
+import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
 import org.apache.hadoop.security.ssl.SSLFactory;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
@@ -40,6 +42,7 @@ import org.apache.hadoop.security.token.TokenRenewer;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticatedURL;
 import org.apache.hadoop.util.HttpExceptionUtils;
+import org.apache.hadoop.util.JsonSerialization;
 import org.apache.hadoop.util.KMSUtil;
 import org.apache.http.client.utils.URIBuilder;
 import org.slf4j.Logger;
@@ -53,6 +56,7 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.lang.reflect.UndeclaredThrowableException;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
@@ -77,7 +81,6 @@ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.CryptoExtension;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectWriter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -129,9 +132,6 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
   public static final int DEFAULT_AUTH_RETRY = 1;
 
   private final ValueQueue<EncryptedKeyVersion> encKeyVersionQueue;
-
-  private static final ObjectWriter WRITER =
-      new ObjectMapper().writerWithDefaultPrettyPrinter();
 
   private final Text dtService;
 
@@ -187,9 +187,10 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
       try {
         if (!(keyProvider instanceof
             KeyProviderDelegationTokenExtension.DelegationTokenExtension)) {
-          LOG.warn("keyProvider {} cannot renew dt.", keyProvider == null ?
-              "null" : keyProvider.getClass());
-          return 0;
+          throw new IOException(String
+              .format("keyProvider %s cannot renew token [%s]",
+                  keyProvider == null ? "null" : keyProvider.getClass(),
+                  token));
         }
         return ((KeyProviderDelegationTokenExtension.DelegationTokenExtension)
             keyProvider).renewDelegationToken(token);
@@ -208,9 +209,10 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
       try {
         if (!(keyProvider instanceof
             KeyProviderDelegationTokenExtension.DelegationTokenExtension)) {
-          LOG.warn("keyProvider {} cannot cancel dt.", keyProvider == null ?
-              "null" : keyProvider.getClass());
-          return;
+          throw new IOException(String
+              .format("keyProvider %s cannot cancel token [%s]",
+                  keyProvider == null ? "null" : keyProvider.getClass(),
+                  token));
         }
         ((KeyProviderDelegationTokenExtension.DelegationTokenExtension)
             keyProvider).cancelDelegationToken(token);
@@ -233,7 +235,7 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
   private static void writeJson(Object obj, OutputStream os)
       throws IOException {
     Writer writer = new OutputStreamWriter(os, StandardCharsets.UTF_8);
-    WRITER.writeValue(writer, obj);
+    JsonSerialization.writer().writeValue(writer, obj);
   }
 
   /**
@@ -400,7 +402,7 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
                     KMS_CLIENT_ENC_KEY_CACHE_NUM_REFILL_THREADS_DEFAULT),
             new EncryptedQueueRefiller());
     authToken = new DelegationTokenAuthenticatedURL.Token();
-    LOG.info("KMSClientProvider for KMS url: {} delegation token service: {}" +
+    LOG.debug("KMSClientProvider for KMS url: {} delegation token service: {}" +
         " created.", kmsUrl, dtService);
   }
 
@@ -477,10 +479,14 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
           return authUrl.openConnection(url, authToken, doAsUser);
         }
       });
+    } catch (ConnectException ex) {
+      String msg = "Failed to connect to: " + url.toString();
+      LOG.warn(msg);
+      throw new IOException(msg, ex);
+    } catch (SocketTimeoutException ex) {
+      LOG.warn("Failed to connect to {}:{}", url.getHost(), url.getPort());
+      throw ex;
     } catch (IOException ex) {
-      if (ex instanceof SocketTimeoutException) {
-        LOG.warn("Failed to connect to {}:{}", url.getHost(), url.getPort());
-      }
       throw ex;
     } catch (UndeclaredThrowableException ex) {
       throw new IOException(ex.getUndeclaredThrowable());
@@ -505,12 +511,21 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
       int expectedResponse, Class<T> klass, int authRetryCount)
       throws IOException {
     T ret = null;
+    OutputStream os = null;
     try {
       if (jsonOutput != null) {
-        writeJson(jsonOutput, conn.getOutputStream());
+        os = conn.getOutputStream();
+        writeJson(jsonOutput, os);
       }
     } catch (IOException ex) {
-      IOUtils.closeStream(conn.getInputStream());
+      // The payload is not serialized if getOutputStream fails.
+      // Calling getInputStream will issue the put/post request with no payload
+      // which causes HTTP 500 server error.
+      if (os == null) {
+        conn.disconnect();
+      } else {
+        IOUtils.closeStream(conn.getInputStream());
+      }
       throw ex;
     }
     if ((conn.getResponseCode() == HttpURLConnection.HTTP_FORBIDDEN
@@ -532,7 +547,9 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
         String requestMethod = conn.getRequestMethod();
         URL url = conn.getURL();
         conn = createConnection(url, requestMethod);
-        conn.setRequestProperty(CONTENT_TYPE, contentType);
+        if (contentType != null && !contentType.isEmpty()) {
+          conn.setRequestProperty(CONTENT_TYPE, contentType);
+        }
         return call(conn, jsonOutput, expectedResponse, klass,
             authRetryCount - 1);
       }
@@ -1024,13 +1041,13 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
           public Token<?> run() throws Exception {
             // Not using the cached token here.. Creating a new token here
             // everytime.
-            LOG.debug("Getting new token from {}, renewer:{}", url, renewer);
+            LOG.info("Getting new token from {}, renewer:{}", url, renewer);
             return authUrl.getDelegationToken(url,
                 new DelegationTokenAuthenticatedURL.Token(), renewer, doAsUser);
           }
         });
         if (token != null) {
-          LOG.debug("New token received: ({})", token);
+          LOG.info("New token received: ({})", token);
           credentials.addToken(token.getService(), token);
           tokens = new Token<?>[] { token };
         } else {
@@ -1076,8 +1093,7 @@ public class KMSClientProvider extends KeyProvider implements CryptoExtension,
       actualUgi = currentUgi.getRealUser();
     }
     if (UserGroupInformation.isSecurityEnabled() &&
-        !containsKmsDt(actualUgi) &&
-        !actualUgi.hasKerberosCredentials()) {
+        !containsKmsDt(actualUgi) && !actualUgi.shouldRelogin()) {
       // Use login user is only necessary when Kerberos is enabled
       // but the actual user does not have either
       // Kerberos credential or KMS delegation token for KMS operations

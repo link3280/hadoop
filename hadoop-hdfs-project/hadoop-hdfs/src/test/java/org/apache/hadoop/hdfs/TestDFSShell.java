@@ -37,7 +37,7 @@ import java.util.zip.GZIPOutputStream;
 import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
 
-import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.log4j.Level;
@@ -2829,11 +2829,11 @@ public class TestDFSShell {
         System.setErr(origErr);
       }
 
-      assertEquals("Error message is not the expected error message",
-          "setrep: Requested replication factor of 1 is less than "
-              + "the required minimum of 2 for /tmp/TestDFSShell-"
-              + "testSetrepLow/testFileForSetrepLow\n",
-          bao.toString());
+      assertTrue("Error message is not the expected error message"
+          + bao.toString(), bao.toString().startsWith(
+              "setrep: Requested replication factor of 1 is less than "
+                  + "the required minimum of 2 for /tmp/TestDFSShell-"
+                  + "testSetrepLow/testFileForSetrepLow"));
     } finally {
       shell.close();
       cluster.shutdown();

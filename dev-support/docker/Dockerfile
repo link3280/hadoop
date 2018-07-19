@@ -154,9 +154,10 @@ RUN apt-get -q update && apt-get -q install -y shellcheck
 RUN apt-get -q update && apt-get -q install -y bats
 
 ####
-# Install pylint (always want latest)
+# Install pylint at fixed version (2.0.0 removed python2 support)
+# https://github.com/PyCQA/pylint/issues/2294
 ####
-RUN pip2 install pylint
+RUN pip2 install pylint==1.9.2
 
 ####
 # Install dateutil.parser
@@ -197,6 +198,9 @@ RUN mkdir -p /opt/apache-forrest && \
     tar xzf /opt/forrest.tar.gz --strip-components 1 -C /opt/apache-forrest
 RUN echo 'forrest.home=/opt/apache-forrest' > build.properties
 ENV FORREST_HOME=/opt/apache-forrest
+
+# Hugo static website generator (for new hadoop site and Ozone docs)
+RUN curl -L -o hugo.deb https://github.com/gohugoio/hugo/releases/download/v0.30.2/hugo_0.30.2_Linux-64bit.deb && dpkg --install hugo.deb && rm hugo.deb
 
 # Add a welcome message and environment checks.
 ADD hadoop_env_checks.sh /root/hadoop_env_checks.sh

@@ -34,7 +34,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.yarn.api.records.ContainerSubState;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.scheduler.UpdateContainerSchedulerEvent;
 import org.slf4j.Logger;
@@ -883,6 +883,11 @@ public class ContainerImpl implements Container {
   }
 
   @Override
+  public long getContainerLaunchTime() {
+    return this.containerLaunchStartTime;
+  }
+
+  @Override
   public Resource getResource() {
     return Resources.clone(
         this.containerTokenIdentifier.getResource());
@@ -1602,8 +1607,10 @@ public class ContainerImpl implements Container {
         }
         container.addDiagnostics(exitEvent.getDiagnosticInfo() + "\n");
       }
-
       if (container.shouldRetry(container.exitCode)) {
+        // Updates to the retry context should  be protected from concurrent
+        // writes. It should only be called from this transition.
+        container.retryPolicy.updateRetryContext(container.windowRetryContext);
         container.storeRetryContext();
         doRelaunch(container,
             container.windowRetryContext.getRemainingRetries(),
@@ -2191,7 +2198,8 @@ public class ContainerImpl implements Container {
   }
 
   private void storeRetryContext() {
-    if (windowRetryContext.getRestartTimes() != null) {
+    if (windowRetryContext.getRestartTimes() != null &&
+        !windowRetryContext.getRestartTimes().isEmpty()) {
       try {
         stateStore.storeContainerRestartTimes(containerId,
             windowRetryContext.getRestartTimes());
@@ -2214,5 +2222,16 @@ public class ContainerImpl implements Container {
   @VisibleForTesting
   SlidingWindowRetryPolicy getRetryPolicy() {
     return retryPolicy;
+  }
+
+  @Override
+  public boolean isContainerInFinalStates() {
+    ContainerState state = getContainerState();
+    return state == ContainerState.KILLING || state == ContainerState.DONE
+        || state == ContainerState.LOCALIZATION_FAILED
+        || state == ContainerState.CONTAINER_RESOURCES_CLEANINGUP
+        || state == ContainerState.CONTAINER_CLEANEDUP_AFTER_KILL
+        || state == ContainerState.EXITED_WITH_FAILURE
+        || state == ContainerState.EXITED_WITH_SUCCESS;
   }
 }

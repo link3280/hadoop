@@ -20,8 +20,8 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher;
 
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.yarn.server.nodemanager.executor.DeletionAsUserContext;
 
 import java.io.DataOutputStream;
 import java.io.File;
@@ -187,7 +187,6 @@ public class ContainerLaunch implements Callable<Integer> {
   }
 
   @Override
-  @SuppressWarnings("unchecked") // dispatcher not typed
   public Integer call() {
     if (!validateContainerState()) {
       return 0;
@@ -372,7 +371,6 @@ public class ContainerLaunch implements Callable<Integer> {
         .build());
   }
 
-  @SuppressWarnings("unchecked")
   protected boolean validateContainerState() {
     // CONTAINER_KILLED_ON_REQUEST should not be missed if the container
     // is already at KILLING
@@ -484,9 +482,25 @@ public class ContainerLaunch implements Callable<Integer> {
     return localResources;
   }
 
-  @SuppressWarnings("unchecked")
   protected int launchContainer(ContainerStartContext ctx)
       throws IOException, ConfigurationException {
+    int launchPrep = prepareForLaunch(ctx);
+    if (launchPrep == 0) {
+      return exec.launchContainer(ctx);
+    }
+    return launchPrep;
+  }
+
+  protected int relaunchContainer(ContainerStartContext ctx)
+      throws IOException, ConfigurationException {
+    int launchPrep = prepareForLaunch(ctx);
+    if (launchPrep == 0) {
+      return exec.relaunchContainer(ctx);
+    }
+    return launchPrep;
+  }
+
+  protected int prepareForLaunch(ContainerStartContext ctx) throws IOException {
     ContainerId containerId = container.getContainerId();
     if (container.isMarkedForKilling()) {
       LOG.info("Container " + containerId + " not launched as it has already "
@@ -508,8 +522,8 @@ public class ContainerLaunch implements Callable<Integer> {
       return ExitCode.TERMINATED.getExitCode();
     } else {
       exec.activateContainer(containerId, pidFilePath);
-      return exec.launchContainer(ctx);
     }
+    return ExitCode.SUCCESS.getExitCode();
   }
 
   protected void setContainerCompletedStatus(int exitCode) {
@@ -526,7 +540,6 @@ public class ContainerLaunch implements Callable<Integer> {
     }
   }
 
-  @SuppressWarnings("unchecked")
   protected void handleContainerExitCode(int exitCode, Path containerLogDir) {
     ContainerId containerId = container.getContainerId();
 
@@ -572,7 +585,6 @@ public class ContainerLaunch implements Callable<Integer> {
    * @param containerLogDir
    * @param diagnosticInfo
    */
-  @SuppressWarnings("unchecked")
   protected void handleContainerExitWithFailure(ContainerId containerID,
       int ret, Path containerLogDir, StringBuilder diagnosticInfo) {
     LOG.warn("Container launch failed : " + diagnosticInfo.toString());
@@ -707,7 +719,6 @@ public class ContainerLaunch implements Callable<Integer> {
    * the process id is available.
    * @throws IOException
    */
-  @SuppressWarnings("unchecked") // dispatcher not typed
   public void cleanupContainer() throws IOException {
     ContainerId containerId = container.getContainerId();
     String containerIdStr = containerId.toString();
@@ -797,25 +808,6 @@ public class ContainerLaunch implements Callable<Integer> {
       }
     }
 
-    final int sleepMsec = 100;
-    int msecLeft = 2000;
-    if (pidFilePath != null) {
-      File file = new File(getExitCodeFile(pidFilePath.toString()));
-      while (!file.exists() && msecLeft >= 0) {
-        try {
-          Thread.sleep(sleepMsec);
-        } catch (InterruptedException e) {
-        }
-        msecLeft -= sleepMsec;
-      }
-      if (msecLeft < 0) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Timeout while waiting for the exit code file:  "
-              + file.getAbsolutePath());
-        }
-      }
-    }
-
     // Reap the container
     boolean result = exec.reapContainer(
         new ContainerReapContext.Builder()
@@ -826,6 +818,7 @@ public class ContainerLaunch implements Callable<Integer> {
       throw new IOException("Reap container failed for container "
           + containerIdStr);
     }
+    cleanupContainerFiles(getContainerWorkDir());
   }
 
   /**
@@ -834,7 +827,6 @@ public class ContainerLaunch implements Callable<Integer> {
    *
    * @throws IOException
    */
-  @SuppressWarnings("unchecked") // dispatcher not typed
   public void signalContainer(SignalContainerCommand command)
       throws IOException {
     ContainerId containerId =
@@ -973,7 +965,6 @@ public class ContainerLaunch implements Callable<Integer> {
    * executor to pause the container.
    * @throws IOException in case of errors.
    */
-  @SuppressWarnings("unchecked") // dispatcher not typed
   public void pauseContainer() throws IOException {
     ContainerId containerId = container.getContainerId();
     String containerIdStr = containerId.toString();
@@ -1023,7 +1014,6 @@ public class ContainerLaunch implements Callable<Integer> {
    * executor to pause the container.
    * @throws IOException in case of error.
    */
-  @SuppressWarnings("unchecked") // dispatcher not typed
   public void resumeContainer() throws IOException {
     ContainerId containerId = container.getContainerId();
     String containerIdStr = containerId.toString();
@@ -1336,6 +1326,7 @@ public class ContainerLaunch implements Callable<Integer> {
   }
 
   private static final class UnixShellScriptBuilder extends ShellScriptBuilder {
+    @SuppressWarnings("unused")
     private void errorCheck() {
       line("hadoop_shell_errorcode=$?");
       line("if [[ \"$hadoop_shell_errorcode\" -ne 0 ]]");
@@ -1630,20 +1621,6 @@ public class ContainerLaunch implements Callable<Integer> {
     }
   }
 
-  private static void putEnvIfNotNull(
-      Map<String, String> environment, String variable, String value) {
-    if (value != null) {
-      environment.put(variable, value);
-    }
-  }
-  
-  private static void putEnvIfAbsent(
-      Map<String, String> environment, String variable) {
-    if (environment.get(variable) == null) {
-      putEnvIfNotNull(environment, variable, System.getenv(variable));
-    }
-  }
-
   private static void addToEnvMap(
       Map<String, String> envMap, Set<String> envSet,
       String envName, String envValue) {
@@ -1656,6 +1633,20 @@ public class ContainerLaunch implements Callable<Integer> {
       containerLogDirs, Map<Path, List<String>> resources,
       Path nmPrivateClasspathJarDir,
       Set<String> nmVars) throws IOException {
+    // Based on discussion in YARN-7654, for ENTRY_POINT enabled
+    // docker container, we forward user defined environment variables
+    // without node manager environment variables.  This is the reason
+    // that we skip sanitizeEnv method.
+    boolean overrideDisable = Boolean.parseBoolean(
+        environment.get(
+            Environment.
+                YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE.
+                    name()));
+    if (overrideDisable) {
+      environment.remove("WORK_DIR");
+      return;
+    }
+
     /**
      * Non-modifiable environment variables
      */
@@ -1700,13 +1691,14 @@ public class ContainerLaunch implements Callable<Integer> {
       addToEnvMap(environment, nmVars, "JVM_PID", "$$");
     }
 
-    // variables here will be forced in, even if the container has specified them.
-    String nmAdminUserEnv = conf.get(
-        YarnConfiguration.NM_ADMIN_USER_ENV,
-        YarnConfiguration.DEFAULT_NM_ADMIN_USER_ENV);
-    Apps.setEnvFromInputString(environment, nmAdminUserEnv, File.pathSeparator);
-    nmVars.addAll(Apps.getEnvVarsFromInputString(nmAdminUserEnv,
-        File.pathSeparator));
+    // variables here will be forced in, even if the container has
+    // specified them.
+    String defEnvStr = conf.get(YarnConfiguration.DEFAULT_NM_ADMIN_USER_ENV);
+    Apps.setEnvFromInputProperty(environment,
+        YarnConfiguration.NM_ADMIN_USER_ENV, defEnvStr, conf,
+        File.pathSeparator);
+    nmVars.addAll(Apps.getEnvVarsFromInputProperty(
+        YarnConfiguration.NM_ADMIN_USER_ENV, defEnvStr, conf));
 
     // TODO: Remove Windows check and use this approach on all platforms after
     // additional testing.  See YARN-358.
@@ -1838,6 +1830,40 @@ public class ContainerLaunch implements Callable<Integer> {
     container.setWorkDir(workDir);
     if (container.isRetryContextSet()) {
       context.getNMStateStore().storeContainerWorkDir(containerId, workDir);
+    }
+  }
+
+  protected Path getContainerWorkDir() throws IOException {
+    String containerWorkDir = container.getWorkDir();
+    if (containerWorkDir == null
+        || !dirsHandler.isGoodLocalDir(containerWorkDir)) {
+      throw new IOException(
+          "Could not find a good work dir " + containerWorkDir
+              + " for container " + container);
+    }
+
+    return new Path(containerWorkDir);
+  }
+
+  /**
+   * Clean up container's files for container relaunch or cleanup.
+   */
+  protected void cleanupContainerFiles(Path containerWorkDir) {
+    LOG.debug("cleanup container {} files", containerWorkDir);
+    // delete ContainerScriptPath
+    deleteAsUser(new Path(containerWorkDir, CONTAINER_SCRIPT));
+    // delete TokensPath
+    deleteAsUser(new Path(containerWorkDir, FINAL_CONTAINER_TOKENS_FILE));
+  }
+
+  private void deleteAsUser(Path path) {
+    try {
+      exec.deleteAsUser(new DeletionAsUserContext.Builder()
+          .setUser(container.getUser())
+          .setSubDir(path)
+          .build());
+    } catch (Exception e) {
+      LOG.warn("Failed to delete " + path, e);
     }
   }
 }

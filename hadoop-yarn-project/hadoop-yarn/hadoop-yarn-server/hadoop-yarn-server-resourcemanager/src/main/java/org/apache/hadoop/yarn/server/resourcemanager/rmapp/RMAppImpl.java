@@ -36,7 +36,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -45,6 +45,7 @@ import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.StringInterner;
+import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
@@ -64,6 +65,7 @@ import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+import org.apache.hadoop.yarn.client.api.AppAdminClient;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
@@ -164,6 +166,7 @@ public class RMAppImpl implements RMApp, Recoverable {
 
   // Mutable fields
   private long startTime;
+  private long launchTime = 0;
   private long finishTime = 0;
   private long storedFinishTime = 0;
   private int firstAttemptIdInStateStore = 1;
@@ -290,6 +293,10 @@ public class RMAppImpl implements RMApp, Recoverable {
     .addTransition(RMAppState.ACCEPTED, RMAppState.ACCEPTED, 
         RMAppEventType.APP_RUNNING_ON_NODE,
         new AppRunningOnNodeTransition())
+      // Handle AppAttemptLaunch to upate the launchTime and publish to ATS
+      .addTransition(RMAppState.ACCEPTED, RMAppState.ACCEPTED,
+        RMAppEventType.ATTEMPT_LAUNCHED,
+        new AttemptLaunchedTransition())
 
      // Transitions from RUNNING state
     .addTransition(RMAppState.RUNNING, RMAppState.RUNNING,
@@ -784,9 +791,9 @@ public class RMAppImpl implements RMApp, Recoverable {
           this.applicationId, currentApplicationAttemptId, this.user,
           this.queue, this.name, host, rpcPort, clientToAMToken,
           createApplicationState(), diags, trackingUrl, this.startTime,
-          this.finishTime, finishState, appUsageReport, origTrackingUrl,
-          progress, this.applicationType, amrmToken, applicationTags,
-          this.getApplicationPriority());
+          this.launchTime, this.finishTime, finishState, appUsageReport,
+          origTrackingUrl, progress, this.applicationType, amrmToken,
+          applicationTags, this.getApplicationPriority());
       report.setLogAggregationStatus(logAggregationStatus);
       report.setUnmanagedApp(submissionContext.getUnmanagedAM());
       report.setAppNodeLabelExpression(getAppNodeLabelExpression());
@@ -834,6 +841,17 @@ public class RMAppImpl implements RMApp, Recoverable {
 
     try {
       return this.startTime;
+    } finally {
+      this.readLock.unlock();
+    }
+  }
+
+  @Override
+  public long getLaunchTime() {
+    this.readLock.lock();
+
+    try {
+      return this.launchTime;
     } finally {
       this.readLock.unlock();
     }
@@ -936,6 +954,7 @@ public class RMAppImpl implements RMApp, Recoverable {
         .getDiagnostics());
     this.storedFinishTime = appState.getFinishTime();
     this.startTime = appState.getStartTime();
+    this.launchTime = appState.getLaunchTime();
     this.callerContext = appState.getCallerContext();
     this.applicationTimeouts = appState.getApplicationTimeouts();
     // If interval > 0, some attempts might have been deleted.
@@ -1036,6 +1055,21 @@ public class RMAppImpl implements RMApp, Recoverable {
       app.rmContext.getSystemMetricsPublisher().appStateUpdated(
           app, stateToATS, app.systemClock.getTime());
     };
+  }
+
+  private static final class AttemptLaunchedTransition
+      extends  RMAppTransition {
+    @Override
+    public void transition(RMAppImpl app, RMAppEvent event) {
+
+      if(app.launchTime == 0) {
+        LOG.info("update the launch time for applicationId: "+
+                app.getApplicationId()+", attemptId: "+
+                app.getCurrentAppAttempt().getAppAttemptId()+
+                "launchTime: "+event.getTimestamp());
+        app.launchTime = event.getTimestamp();
+      }
+    }
   }
 
   private static final class AppRunningOnNodeTransition extends RMAppTransition {
@@ -1297,7 +1331,8 @@ public class RMAppImpl implements RMApp, Recoverable {
     ApplicationStateData appState =
         ApplicationStateData.newInstance(this.submitTime, this.startTime,
             this.user, this.submissionContext,
-            stateToBeStored, diags, this.storedFinishTime, this.callerContext);
+            stateToBeStored, diags, this.launchTime, this.storedFinishTime,
+            this.callerContext);
     appState.setApplicationTimeouts(this.applicationTimeouts);
     this.rmContext.getStateStore().updateApplicationState(appState);
   }
@@ -1436,6 +1471,33 @@ public class RMAppImpl implements RMApp, Recoverable {
     };
   }
 
+  /**
+   * Attempt to perform a type-specific cleanup after application has completed.
+   *
+   * @param app application to clean up
+   */
+  static void appAdminClientCleanUp(RMAppImpl app) {
+    try {
+      AppAdminClient client = AppAdminClient.createAppAdminClient(app
+          .applicationType, app.conf);
+      int result = client.actionCleanUp(app.name, app.user);
+      if (result == 0) {
+        LOG.info("Type-specific cleanup of application " + app.applicationId
+            + " of type " + app.applicationType + " succeeded");
+      } else {
+        LOG.warn("Type-specific cleanup of application " + app.applicationId
+            + " of type " + app.applicationType + " did not succeed with exit"
+            + " code " + result);
+      }
+    } catch (IllegalArgumentException e) {
+      // no AppAdminClient class has been specified for the application type,
+      // so this does not need to be logged
+    } catch (Exception e) {
+      LOG.warn("Could not run type-specific cleanup on application " +
+          app.applicationId + " of type " + app.applicationType, e);
+    }
+  }
+
   private static class FinalTransition extends RMAppTransition {
 
     private final RMAppState finalState;
@@ -1470,6 +1532,8 @@ public class RMAppImpl implements RMApp, Recoverable {
           .appFinished(app, finalState, app.finishTime);
       // set the memory free
       app.clearUnusedFields();
+
+      appAdminClientCleanUp(app);
     };
   }
 
@@ -1987,6 +2051,10 @@ public class RMAppImpl implements RMApp, Recoverable {
   private void sendATSCreateEvent() {
     rmContext.getRMApplicationHistoryWriter().applicationStarted(this);
     rmContext.getSystemMetricsPublisher().appCreated(this, this.startTime);
+    String appViewACLs = submissionContext.getAMContainerSpec()
+        .getApplicationACLs().get(ApplicationAccessType.VIEW_APP);
+    rmContext.getSystemMetricsPublisher().appACLsUpdated(
+        this, appViewACLs, System.currentTimeMillis());
   }
 
   @Private

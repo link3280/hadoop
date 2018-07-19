@@ -126,6 +126,7 @@ import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.api.records.UpdatedContainer;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+import org.apache.hadoop.yarn.client.AMRMClientUtils;
 import org.apache.hadoop.yarn.exceptions.ApplicationMasterNotRegisteredException;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.InvalidApplicationMasterRequestException;
@@ -158,7 +159,6 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeRequ
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceResponse;
-import org.apache.hadoop.yarn.server.utils.AMRMClientUtils;
 import org.apache.hadoop.yarn.util.Records;
 import org.junit.Assert;
 import org.slf4j.Logger;
@@ -251,8 +251,6 @@ public class MockResourceManagerFacade implements ApplicationClientProtocol,
     ApplicationAttemptId attemptId = getAppIdentifier();
     LOG.info("Registering application attempt: " + attemptId);
 
-    shouldReRegisterNext = false;
-
     List<Container> containersFromPreviousAttempt = null;
 
     synchronized (applicationContainerIdMap) {
@@ -266,7 +264,7 @@ public class MockResourceManagerFacade implements ApplicationClientProtocol,
             containersFromPreviousAttempt.add(Container.newInstance(containerId,
                 null, null, null, null, null));
           }
-        } else {
+        } else if (!shouldReRegisterNext) {
           throw new InvalidApplicationMasterRequestException(
               AMRMClientUtils.APP_ALREADY_REGISTERED_MESSAGE);
         }
@@ -275,6 +273,8 @@ public class MockResourceManagerFacade implements ApplicationClientProtocol,
         applicationContainerIdMap.put(attemptId, new ArrayList<ContainerId>());
       }
     }
+
+    shouldReRegisterNext = false;
 
     // Make sure we wait for certain test cases last in the method
     synchronized (syncObj) {
@@ -338,13 +338,6 @@ public class MockResourceManagerFacade implements ApplicationClientProtocol,
       throws YarnException, IOException {
 
     validateRunning();
-
-    if (request.getAskList() != null && request.getAskList().size() > 0
-        && request.getReleaseList() != null
-        && request.getReleaseList().size() > 0) {
-      Assert.fail("The mock RM implementation does not support receiving "
-          + "askList and releaseList in the same heartbeat");
-    }
 
     ApplicationAttemptId attemptId = getAppIdentifier();
     LOG.info("Allocate from application attempt: " + attemptId);
